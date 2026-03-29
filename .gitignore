@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment/secrets
+.env
+.env.*
+credentials/
+accounts.json
+config/google_client_secrets.json
+
+# Runtime outputs
+debug-*.log
+downloads/
+download/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
