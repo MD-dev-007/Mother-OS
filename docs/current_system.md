@@ -5,20 +5,22 @@
 - Queries are routed by intent:
   - `respond`: direct LLM response.
   - `act`: LangGraph agent execution.
-- Agent flow is now a looped graph with validation:
-  - `planner -> validator -> executor -> planner` (until final, approval stop, or max steps).
+- Agent flow is a LangGraph with validation and modes:
+  - Reasoning mode: `planner -> validator -> executor -> planner` (loop until stop).
+  - Fast mode: `planner -> validator -> executor -> end` (single pass).
 
 ## 2. Architecture (Current)
 
 - **Intent Router**: keyword-based `respond` vs `act` split.
-- **Planner**: LLM-based planner that emits structured JSON (`final` or planned action list).
-- **Validator**: checks actions requiring user approval (sensitive operations).
-- **Executor**: executes one or more planned tool actions and records outputs.
+- **Planner**: LLM-based planner that emits structured JSON with a `mode` (`fast` or `reasoning`) and either a final response or an action list.
+- **Argument Validator**: normalizes and validates tool arguments against each tool's `args_schema` (auto-fix types/defaults, detect missing required fields).
+- **Safety Validator**: checks actions requiring user approval (sensitive operations and path normalization).
+- **Executor**: executes one or more planned tool actions after variable/path resolution and argument validation, and records outputs.
 - **Tool System**: base `Tool` class + centralized `TOOL_REGISTRY`.
 - **LLM Client**: shared Gemini wrapper with fallback model behavior and safe error responses.
 - **Interfaces**:
   - CLI entrypoint (`app/main.py`).
-  - Gradio UI (`ui/gradio_app.py`) with step inspection and approval flow.
+  - Gradio UI (`ui/gradio_app.py`) with step inspection and approval/arg-prompt flows.
 
 ## 3. Flow (Step-by-step)
 

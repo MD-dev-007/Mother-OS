@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
+from core.arg_validator import validate_and_fix_args
 from core.state import AgentState
 from tools.registry import TOOL_REGISTRY
 from utils.resolver import resolve_variables
@@ -40,9 +41,8 @@ class Executor:
             next_state["step_history"] = step_history
             return next_state
 
-        outputs: Dict[str, Any] = {}
-        executor_summary: Dict[str, Any] = {}
-
+        # Phase 1: resolve + validate all actions (do not execute if any invalid).
+        planned: List[Tuple[str, Dict[str, Any], str]] = []
         for i, action in enumerate(actions):
             if not isinstance(action, dict):
                 continue
@@ -61,16 +61,35 @@ class Executor:
             if not isinstance(output_key, str) or not output_key.strip():
                 output_key = f"tool_output_{i+1}"
 
-            resolved_args = resolve_variables(args, tool_outputs)
-
             tool = TOOL_REGISTRY[tool_name]
-            result: Dict[str, Any] = tool.run(resolved_args)
+            resolved_args = resolve_variables(args, tool_outputs)
+            check = validate_and_fix_args(tool, resolved_args)
+            if not check.get("valid"):
+                next_state["final"] = True
+                next_state["response"] = check.get("message") or "Invalid tool arguments."
+                next_state["pending_arg_prompt"] = {
+                    "missing_fields": check.get("missing_fields") or [],
+                    "message": check.get("message") or "",
+                    "tool": tool_name,
+                }
+                next_state["step_history"] = step_history
+                return next_state
+
+            planned.append((tool_name, check["fixed_args"], output_key))
+
+        # Phase 2: execute in order.
+        outputs: Dict[str, Any] = {}
+        executor_summary: Dict[str, Any] = {}
+
+        for tool_name, fixed_args, output_key in planned:
+            tool = TOOL_REGISTRY[tool_name]
+            result: Dict[str, Any] = tool.run(fixed_args)
 
             outputs[output_key] = result
             tool_outputs[output_key] = result
             executor_summary = {
                 "tool": tool_name,
-                "args": resolved_args,
+                "args": fixed_args,
                 "output": result,
             }
 
@@ -90,4 +109,3 @@ class Executor:
         next_state["step_count"] = int(next_state.get("step_count", 0)) + 1
         next_state["step"] = int(next_state.get("step", 0)) + 1
         return next_state
-

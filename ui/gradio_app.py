@@ -463,6 +463,7 @@ def chat(
         "step_history": [],
         "tool_outputs": {},
         "pending_action": None,
+        "pending_arg_prompt": None,
         "final": False,
         "response": "",
         "step": 0,
@@ -472,12 +473,33 @@ def chat(
     response = (result or {}).get("response") or ""
     steps = (result or {}).get("step_history", []) or []
     pending_action = (result or {}).get("pending_action")
+    pending_arg_prompt = (result or {}).get("pending_arg_prompt")
 
     history = history + [
         {"role": "user", "content": user_input},
     ]
 
     graph_md = _build_graph_markdown("act")
+
+    if pending_arg_prompt is not None and isinstance(pending_arg_prompt, dict):
+        prompt_text = (pending_arg_prompt.get("message") or response or "").strip()
+        if not prompt_text:
+            prompt_text = "Some required information is missing for this action."
+        history = history + [{"role": "assistant", "content": prompt_text}]
+        steps_md, step_labels = _build_step_summaries(steps)
+        details_md = _format_step_details(steps[-1]) if steps else "No step details."
+        steps_selector_update = gr.update(
+            choices=step_labels, value=step_labels[-1] if step_labels else None
+        )
+        return (
+            history,
+            graph_md,
+            steps_md,
+            details_md,
+            steps,
+            steps_selector_update,
+            None,
+        )
 
     # If validator stopped for approval, ask in chat.
     if pending_action is not None:

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
+from core.arg_validator import validate_and_fix_args
 from core.executor import Executor
 from core.planner import Planner
 from core.state import AgentState
 from core.validator import validate_action
 from llm.client import LLMClient
+from tools.registry import TOOL_REGISTRY
+from utils.resolver import resolve_variables
 
 
 MAX_STEPS = 5
@@ -31,14 +34,55 @@ def build_agent():
         # Validator checks planned actions from the latest planner step.
         pending = None
         step_history = list(next_state.get("step_history", []))
+        tool_outputs = dict(next_state.get("tool_outputs", {}))
         last_planner = None
-        for item in reversed(step_history):
+        last_planner_idx = -1
+        for i in range(len(step_history) - 1, -1, -1):
+            item = step_history[i]
             if isinstance(item, dict) and item.get("type") == "planner":
                 last_planner = item
+                last_planner_idx = i
                 break
         actions = []
         if isinstance(last_planner, dict) and isinstance(last_planner.get("actions"), list):
             actions = last_planner.get("actions", [])
+
+        # 1) Argument validation + auto-fix (before approval rules).
+        if actions and last_planner_idx >= 0:
+            updated_actions: list = []
+            for action in actions:
+                if not isinstance(action, dict):
+                    updated_actions.append(action)
+                    continue
+                tool_name = action.get("tool")
+                raw_args = action.get("args", {}) or {}
+                if not isinstance(tool_name, str) or tool_name not in TOOL_REGISTRY:
+                    updated_actions.append(action)
+                    continue
+                if not isinstance(raw_args, dict):
+                    raw_args = {}
+                tool = TOOL_REGISTRY[tool_name]
+                resolved = resolve_variables(dict(raw_args), tool_outputs)
+                check = validate_and_fix_args(tool, resolved)
+                if not check.get("valid"):
+                    next_state["pending_arg_prompt"] = {
+                        "missing_fields": check.get("missing_fields") or [],
+                        "message": check.get("message") or "",
+                        "tool": tool_name,
+                    }
+                    next_state["response"] = check.get("message") or "Invalid tool arguments."
+                    next_state["final"] = True
+                    next_state["pending_action"] = None
+                    return next_state
+                new_action = dict(action)
+                new_action["args"] = check["fixed_args"]
+                updated_actions.append(new_action)
+
+            patched = dict(last_planner)
+            patched["actions"] = updated_actions
+            step_history[last_planner_idx] = patched
+            next_state["step_history"] = step_history
+            actions = updated_actions
 
         for idx, action in enumerate(actions):
             decision = validate_action(action)
@@ -68,12 +112,16 @@ def build_agent():
         return next_state
 
     def route_after_validator(state: AgentState) -> str:
+        if state.get("pending_arg_prompt") is not None:
+            return END
         # If an approval is required, stop the graph.
         if state.get("pending_action") is not None:
             return END
         return "executor"
 
     def route_after_executor(state: AgentState) -> str:
+        if state.get("pending_arg_prompt") is not None:
+            return END
         # Fast mode: execute once, then stop.
         if state.get("mode") == "fast":
             return END
