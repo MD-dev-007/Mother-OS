@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Tuple
 
 from core.arg_validator import validate_and_fix_args
 from core.state import AgentState
 from tools.registry import TOOL_REGISTRY
+from utils.path_resolver import resolve_system_path
 from utils.resolver import resolve_variables
 
 
@@ -87,11 +89,29 @@ class Executor:
 
             outputs[output_key] = result
             tool_outputs[output_key] = result
-            executor_summary = {
+            executor_summary: Dict[str, Any] = {
                 "tool": tool_name,
                 "args": fixed_args,
                 "output": result,
             }
+            if tool_name == "file.read":
+                rp = result.get("resolved_path")
+                if not isinstance(rp, str) or not rp.strip():
+                    p_arg = fixed_args.get("path")
+                    if isinstance(p_arg, str) and p_arg.strip():
+                        try:
+                            rp = resolve_system_path(p_arg.strip())
+                        except Exception:
+                            rp = p_arg.strip()
+                    else:
+                        rp = ""
+                ext = os.path.splitext(rp)[1].lower() if rp else ""
+                file_type = ext[1:] if ext.startswith(".") else (ext or "unknown")
+                executor_summary["file_read"] = {
+                    "resolved_path": rp,
+                    "file_type": file_type or "unknown",
+                    "read_status": result.get("status"),
+                }
 
         # Store executor step.
         step_history.append(

@@ -122,8 +122,15 @@ def build_agent():
     def route_after_executor(state: AgentState) -> str:
         if state.get("pending_arg_prompt") is not None:
             return END
-        # Fast mode: execute once, then stop.
+        # Fast mode: execute tool(s) once, then stop IF we already have a final response.
+        # If the planner returned actions but didn't produce a final response yet,
+        # run the planner one more time so the UI gets a user-facing answer.
         if state.get("mode") == "fast":
+            step_count = int(state.get("step_count", 0))
+            response = state.get("response") or ""
+            tool_outputs = state.get("tool_outputs") if isinstance(state.get("tool_outputs"), dict) else {}
+            if step_count <= 1 and not bool(response) and len(tool_outputs) > 0:
+                return "planner"
             return END
         # Stop if planner marked final or we hit max steps.
         if bool(state.get("final", False)):

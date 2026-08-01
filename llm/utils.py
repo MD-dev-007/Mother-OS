@@ -22,3 +22,15 @@ def parse_planner_json(text: str) -> Dict[str, Any]:
     except json.JSONDecodeError as e:
         raise PlannerOutputError(f"Planner did not return valid JSON: {e}") from e
 
+
+def safe_json_parse(text: str) -> Dict[str, Any]:
+    """Best-effort parse of planner JSON; never raises."""
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    try:
+        return json.loads(extract_json_object(text))
+    except Exception:
+        return {"final": True, "response": "Failed to parse planner output."}
+

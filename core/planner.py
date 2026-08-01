@@ -5,7 +5,7 @@ import json
 from core.state import AgentState
 from llm.client import LLMClient
 from llm.prompts import build_planner_prompt
-from llm.utils import PlannerOutputError, parse_planner_json
+from llm.utils import PlannerOutputError, parse_planner_json, safe_json_parse
 from tools.registry import TOOL_REGISTRY
 
 
@@ -42,7 +42,13 @@ class Planner:
         step_history = list(next_state.get("step_history", []))
 
         try:
-            payload = parse_planner_json(text)
+            try:
+                payload = parse_planner_json(text)
+            except PlannerOutputError:
+                payload = safe_json_parse(text)
+                if not isinstance(payload, dict):
+                    payload = {"final": True, "response": "Failed to parse planner output."}
+
             next_state["step"] = int(next_state.get("step", 0)) + 1
             mode_raw = payload.get("mode")
             mode = mode_raw if mode_raw in ("fast", "reasoning") else "reasoning"

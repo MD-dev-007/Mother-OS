@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import warnings
+# Suppress noisy but harmless deprecation warnings from third-party libraries.
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*LangChainPendingDeprecationWarning.*")
+
+
 import os
 import sys
 import json
@@ -8,10 +15,13 @@ import uuid
 from typing import Any, List, Tuple
 
 import gradio as gr
+from dotenv import load_dotenv
 
 
 # Allow running via: python ui/gradio_app.py
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, _PROJECT_ROOT)
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=True)
 
 from core.agent import build_agent
 from core.intent_router import detect_intent
@@ -20,9 +30,34 @@ from llm.client import LLMClient
 from tools.registry import TOOL_REGISTRY
 
 
-agent = build_agent()
-llm = LLMClient()
-executor = Executor()
+# ---------------------------------------------------------------------------
+# Lazy singletons — initialized on first request, not at startup.
+# This keeps startup near-instant even with heavy deps (Vertex, unstructured).
+# ---------------------------------------------------------------------------
+_agent = None
+_llm = None
+_executor = None
+
+
+def _get_agent():
+    global _agent
+    if _agent is None:
+        _agent = build_agent()
+    return _agent
+
+
+def _get_llm():
+    global _llm
+    if _llm is None:
+        _llm = LLMClient()
+    return _llm
+
+
+def _get_executor():
+    global _executor
+    if _executor is None:
+        _executor = Executor()
+    return _executor
 
 #region debug logging
 LOG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "debug-29a5ef.log"))
@@ -402,7 +437,7 @@ def chat(
             "step": 0,
             "step_count": 0,
         }
-        exec_result_state = executor.execute(temp_state)
+        exec_result_state = _get_executor().execute(temp_state)
 
         # Extract the produced executor step.
         produced_steps = exec_result_state.get("step_history", []) if isinstance(exec_result_state, dict) else []
@@ -444,7 +479,7 @@ def chat(
     # --- Normal agent/LLM flow ---
     intent = detect_intent(user_input)
     if intent == "respond":
-        response = llm.generate(user_input)
+        response = _get_llm().generate(user_input)
         steps = []
         graph_md = _build_graph_markdown(intent)
         history = history + [
@@ -469,7 +504,7 @@ def chat(
         "step": 0,
         "step_count": 0,
     }
-    result = agent.invoke(state)
+    result = _get_agent().invoke(state)
     response = (result or {}).get("response") or ""
     steps = (result or {}).get("step_history", []) or []
     pending_action = (result or {}).get("pending_action")
@@ -593,7 +628,94 @@ def connect_google_account(nickname: str) -> str:
     return f"Failed to connect account: {(result or {}).get('message') or 'Unknown error'}"
 
 
-with gr.Blocks() as app:
+# ---------------------------------------------------------------------------
+# Dynamic LLM info — returns raw HTML, re-reads .env on every call
+# ---------------------------------------------------------------------------
+def get_llm_info() -> str:
+    load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=True)
+    provider = (os.getenv("LLM_PROVIDER") or "gemini").strip().lower()
+
+    def _pill(text: str, color: str = "#1e3a5f", text_color: str = "#7dd3fc") -> str:
+        return (
+            f'<span style="background:{color};color:{text_color};padding:2px 10px;'
+            f'border-radius:20px;font-size:0.85em;font-weight:600;font-family:monospace;">'
+            f"{text}</span>"
+        )
+
+    if provider == "ollama":
+        model = (os.getenv("OLLAMA_MODEL") or "llama3.1").strip()
+        host  = (os.getenv("OLLAMA_HOST") or "http://localhost:11434").strip()
+        try:
+            import requests as _req
+            r = _req.get(f"{host}/api/tags", timeout=3)
+            dot = "🟢" if r.status_code == 200 else "🔴"
+            status_text = "Running" if r.status_code == 200 else f"HTTP {r.status_code}"
+        except Exception:
+            dot, status_text = "🔴", "Unreachable"
+        rows = [
+            ("Provider", _pill("Ollama") + " &nbsp;local"),
+            ("Model",    _pill(model)),
+            ("Host",     _pill(host)),
+            ("Status",   f"{dot} {status_text}"),
+        ]
+
+    elif provider == "vertex":
+        model   = (os.getenv("GOOGLE_MODEL")      or "gemini-2.5-flash").strip()
+        project = (os.getenv("GOOGLE_PROJECT_ID") or "—").strip()
+        region  = (os.getenv("GOOGLE_REGION")     or "us-central1").strip()
+        rows = [
+            ("Provider", _pill("Vertex AI") + " &nbsp;Google Cloud"),
+            ("Model",    _pill(model)),
+            ("Project",  _pill(project)),
+            ("Region",   _pill(region)),
+        ]
+
+    else:  # gemini / AI Studio
+        model   = (os.getenv("GOOGLE_MODEL") or "gemini-2.5-flash").strip()
+        api_key = os.getenv("GOOGLE_API_KEY") or ""
+        key_ok  = bool(api_key and api_key != "your_api_key_here")
+        rows = [
+            ("Provider", _pill("Gemini AI Studio")),
+            ("Model",    _pill(model)),
+            ("API Key",  "✅ Set" if key_ok else "❌ Not set"),
+        ]
+
+    tr_html = "".join(
+        f'<tr><td style="color:#94a3b8;padding:4px 14px 4px 0;white-space:nowrap;'
+        f'font-weight:600;font-size:0.82em;text-transform:uppercase;letter-spacing:.05em;">'
+        f"{label}</td>"
+        f'<td style="padding:4px 0;">{value}</td></tr>'
+        for label, value in rows
+    )
+    return f"""
+    <div style="
+        background:linear-gradient(135deg,#1e293b 0%,#0f172a 100%);
+        border:1px solid #334155;
+        border-radius:12px;
+        padding:14px 20px;
+        display:flex;
+        align-items:center;
+        gap:18px;
+        margin-bottom:4px;
+    ">
+      <span style="font-size:1.6em;">&#129302;</span>
+      <div>
+        <div style="color:#cbd5e1;font-size:0.78em;font-weight:700;
+                    text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">
+          Active LLM
+        </div>
+        <table style="border-collapse:collapse;">{tr_html}</table>
+      </div>
+    </div>
+    """
+
+
+with gr.Blocks(title="MotherOS") as app:
+    # --- LLM status bar ---
+    with gr.Row(equal_height=True):
+        llm_info_display = gr.HTML(value=get_llm_info())
+        refresh_llm_btn  = gr.Button("🔄 Refresh LLM Info", size="sm", scale=0, min_width=140)
+
     with gr.Row():
         with gr.Column(scale=2):
             chatbot = gr.Chatbot(label="MotherOS Chat")
@@ -645,6 +767,7 @@ with gr.Blocks() as app:
 
     step_selector.change(select_step, inputs=[step_selector, steps_state], outputs=step_details)
     connect_btn.click(connect_google_account, inputs=[account_nickname], outputs=[connect_status])
+    refresh_llm_btn.click(get_llm_info, inputs=[], outputs=[llm_info_display])
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@
 - **Safety Validator**: checks actions requiring user approval (sensitive operations and path normalization).
 - **Executor**: executes one or more planned tool actions after variable/path resolution and argument validation, and records outputs.
 - **Tool System**: base `Tool` class + centralized `TOOL_REGISTRY`.
-- **LLM Client**: shared Gemini wrapper with fallback model behavior and safe error responses.
+- **LLM Client**: provider-switching LLM wrapper (Gemini AI Studio or Vertex AI) with fallback model behavior and safe error responses.
 - **Interfaces**:
   - CLI entrypoint (`app/main.py`).
   - Gradio UI (`ui/gradio_app.py`) with step inspection and approval/arg-prompt flows.
@@ -60,6 +60,7 @@
   - Accepts old single `action` payload and normalizes to `actions`.
 - Robustness:
   - Malformed planner output is treated as final with error-safe fallback.
+  - Best-effort JSON parsing is used (`safe_json_parse`) to recover when the model wraps JSON in extra text.
 
 ## 7. Validator Behavior
 
@@ -79,7 +80,10 @@
 
 ## 9. Tools Implemented
 
-- `file.read`: real filesystem read (size-capped).
+- `file.read`: multi-format filesystem reader via Unstructured (size-capped).
+  - Supports common formats like `pdf`, `docx`, `txt`, `pptx`, and more.
+  - For image files (e.g. `png`, `jpg`), `file.read` attempts layout+OCR extraction (requires the `tesseract` executable on PATH).
+  - Output is capped for safety at 10,000 characters and may include `[TRUNCATED]`.
 - `file.write`: write file (approval required).
 - `file.update`: overwrite/update file (approval required).
 - `file.delete`: delete file (approval required).
@@ -92,10 +96,33 @@
 
 ## 10. LLM Setup
 
-- **Provider**: Gemini via `ChatGoogleGenerativeAI`.
-- **Configured in**: `config/settings.py` and `llm/client.py`.
-- **Current default model**: `gemini-3.1-pro` (override with `GOOGLE_MODEL`).
-- Fallback logic attempts `gemini-2.5-flash` then `gemini-2.0-flash` for model-not-found errors.
+### Providers
+
+- **Default provider**: Gemini (AI Studio) via `ChatGoogleGenerativeAI`.
+- **Optional provider**: Vertex AI (Gemini on Vertex) via `google-cloud-aiplatform` / `vertexai`.
+- **Provider switch**: set `LLM_PROVIDER=vertex` to use Vertex; otherwise defaults to `gemini`.
+
+### Environment variables
+
+- **Gemini (AI Studio)**:
+  - `GOOGLE_API_KEY`
+  - `GOOGLE_MODEL` (default `gemini-3.1-pro`)
+  - `GOOGLE_TEMPERATURE`
+- **Vertex AI**:
+  - `GOOGLE_APPLICATION_CREDENTIALS` (service account JSON path)
+  - `GOOGLE_PROJECT_ID`
+  - `GOOGLE_REGION` (default `asia-south1`)
+  - `GOOGLE_MODEL` (treated as the preferred Vertex model name when `LLM_PROVIDER=vertex`)
+
+### Fallback behavior
+
+- **Gemini (AI Studio)**: on model-not-found attempts `gemini-2.5-flash` then `gemini-2.0-flash`.
+- **Vertex AI**: attempts the requested model, then falls back to `gemini-1.5-pro`, then `gemini-1.5-flash`.
+
+### Failure safety
+
+- Auth/quota/model errors should not crash the agent loop; the system returns a safe final response like:
+  - `{"final": true, "response": "LLM temporarily unavailable."}`
 
 ## 11. Current Limitations
 
